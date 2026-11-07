@@ -1,0 +1,130 @@
+`timescale 1ns / 1ps
+module TX(
+    input  wire clk,         
+    input  wire rst_n,       
+    input  wire s_tick,      // Baud tick (1x baud rate for TX)
+    input  wire tx_start,    // Pulse to initiate transmission
+    input  wire [15:0] din,  // 16-bit parallel data input
+    output reg  tx_done_tick,// Pulses high when 16-bit transmission is complete
+    output reg  tx           // Serial output line
+);
+
+    localparam [1:0]
+        STATE_IDLE  = 2'b00,
+        STATE_START = 2'b01,
+        STATE_DATA  = 2'b10,
+        STATE_STOP  = 2'b11;
+
+    reg [1:0] state_reg, state_next;
+    reg [3:0] s_reg, s_next;       // Tick counter (used to hold bit duration)
+    reg [4:0] n_reg, n_next;       // Bit counter (0 to 15 for 16-bit data)
+    reg [15:0] b_reg, b_next;      // Shift register for data
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            state_reg    <= STATE_IDLE;
+            s_reg        <= 4'b0;
+            n_reg        <= 5'b0;
+            b_reg        <= 16'b0;
+            tx           <= 1'b1; // UART idle line state is HIGH
+        end 
+        
+        else 
+        begin
+            state_reg    <= state_next;
+            s_reg        <= s_next;
+            n_reg        <= n_next;
+            b_reg        <= b_next;
+            
+            case (state_next)
+                STATE_IDLE, STATE_STOP: tx <= 1'b1;
+                STATE_START:            tx <= 1'b0; // Start bit is LOW
+                STATE_DATA:             tx <= b_reg[0]; // LSB first transmission
+                default:                tx <= 1'b1;
+            endcase
+        end
+    end
+
+    
+    always @* 
+    begin
+        state_next   = state_reg;
+        s_next       = s_reg;
+        n_next       = n_reg;
+        b_next       = b_reg;
+        tx_done_tick = 1'b0;
+
+        case (state_reg)
+            STATE_IDLE: 
+            begin
+                if (tx_start) 
+                begin
+                    state_next = STATE_START;
+                    s_next     = 4'b0;
+                    b_next     = din; // Load 16-bit parallel data
+                end
+            end
+            
+            STATE_START: 
+            begin
+                if (s_tick) 
+                begin
+                    if (s_reg == 4'd15) 
+                    begin // Full bit period duration for 1x tick
+                        state_next = STATE_DATA;
+                        s_next     = 4'b0;
+                        n_next     = 5'b0;
+                    end
+                    
+                    else 
+                    begin
+                        s_next = s_reg + 1'b1;
+                    end
+                end
+            end
+            
+            STATE_DATA: 
+            begin
+                if (s_tick) 
+                begin
+                    if (s_reg == 4'd15) 
+                    begin
+                        s_next = 4'b0;
+                        b_next = {1'b0, b_reg[15:1]};
+                         
+                        if (n_reg == 5'd15)
+                            state_next = STATE_STOP;
+                            
+                        else
+                            n_next = n_reg + 1'b1;
+                    end
+                    
+                    else 
+                    begin
+                        s_next = s_reg + 1'b1;
+                    end
+                end
+            end
+            
+            STATE_STOP: 
+            begin
+                if (s_tick) 
+                begin
+                    if (s_reg == 4'd15) 
+                    begin
+                        state_next   = STATE_IDLE;
+                        tx_done_tick = 1'b1; // Signal transmission complete
+                    end
+                    
+                    else 
+                    begin
+                        s_next = s_reg + 1'b1;
+                    end
+                end
+            end
+            
+            default: state_next = STATE_IDLE;
+        endcase
+    end
+
+endmodule
