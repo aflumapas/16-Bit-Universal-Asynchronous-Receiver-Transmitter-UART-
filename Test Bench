@@ -1,0 +1,116 @@
+`timescale 1ns / 1ps
+module tb_UART_2();
+
+    // --- System Parameters ---
+    parameter CLK_FREQ  = 50000000; // 50 MHz system clock
+    parameter BAUD_RATE = 9600;     // 9600 bps baud rate
+    parameter CLK_PERIOD = 20;      // 50 MHz clock period in ns (1 / 50MHz = 20ns)
+
+    // --- Signal Declarations ---
+    reg         clk;
+    reg         rst_n;
+    wire        rx;
+    wire        tx;
+    
+    reg  [15:0] din;
+    reg         wr_en;
+    wire [15:0] dout;
+    reg         rd_en;
+    
+    wire        tx_full;
+    wire        rx_empty;
+
+    // --- Loopback Connection ---
+    // Connect TX output directly to RX input
+    assign rx = tx;
+
+    // --- Instantiate Design Under Test (DUT) ---
+    UART_2 #(
+        .CLK_FREQ(CLK_FREQ),
+        .BAUD_RATE(BAUD_RATE)
+    ) dut (
+        .clk(clk),
+        .rst_n(rst_n),
+        .rx(rx),
+        .tx(tx),
+        .din(din),
+        .wr_en(wr_en),
+        .dout(dout),
+        .rd_en(rd_en),
+        .tx_full(tx_full),
+        .rx_empty(rx_empty)
+    );
+
+    // --- Clock Generation (50 MHz) ---
+    always begin
+        clk = 1'b0;
+        #(CLK_PERIOD / 2);
+        clk = 1'b1;
+        #(CLK_PERIOD / 2);
+    end
+
+    // --- Test Task: Send & Verify 16-bit Word ---
+    task send_and_verify_word(input [15:0] test_data);
+        begin
+            // 1. Write word into TX FIFO
+            @(posedge clk);
+            if (!tx_full) begin
+                din   <= test_data;
+                wr_en <= 1'b1;
+                $display("[%0t ns] [TX] Writing word to TX FIFO: 0x%04X", $time, test_data);
+            end else begin
+                $display("[%0t ns] [ERROR] TX FIFO is full!", $time);
+            end
+
+            @(posedge clk);
+            wr_en <= 1'b0;
+
+            // 2. Wait for data to be transmitted and received via RX FIFO
+            $display("[%0t ns] [WAIT] Waiting for UART transmission...", $time);
+            wait (rx_empty == 1'b0);
+
+            // 3. Pulse read enable to consume data from RX FIFO
+            @(posedge clk);
+            rd_en <= 1'b1;
+            @(posedge clk);
+            rd_en <= 1'b0;
+
+            // 4. Verify received word
+            if (dout === test_data) begin
+                $display("[%0t ns] [PASS] Successfully received matched word: 0x%04X", $time, dout);
+            end else begin
+                $display("[%0t ns] [FAIL] Expected: 0x%04X, Received: 0x%04X", $time, test_data, dout);
+            end
+        end
+    endtask
+
+    // --- Main Test Sequence ---
+    initial begin
+        // Initialize Inputs
+        rst_n = 1'b0;
+        din   = 16'h0000;
+        wr_en = 1'b0;
+        rd_en = 1'b0;
+
+        // Apply Reset
+        #(CLK_PERIOD * 5);
+        rst_n = 1'b1;
+        #(CLK_PERIOD * 5);
+        $display("[%0t ns] System Reset Released.", $time);
+
+        // Test Case 1: Send Data Word 0xA5C3
+        send_and_verify_word(16'hA5C3);
+
+        // Delay between transmissions
+        #(CLK_PERIOD * 100);
+
+        // Test Case 2: Send Data Word 0x1234
+        send_and_verify_word(16'h1234);
+
+        // Delay between transmissions
+        #(CLK_PERIOD * 100);
+
+        // Test Case 3: Send Boundary Word 0xFFFF
+        send_and_verify_word(16'hFFFF);
+    end
+endmodule
