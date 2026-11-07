@@ -1,0 +1,168 @@
+`timescale 1ns / 1ps
+module UART_2 #(
+    parameter CLK_FREQ  = 50000000, 
+    parameter BAUD_RATE = 9600      
+)(
+    input  wire clk,
+    input  wire rst_n,
+    input  wire rx,
+    output wire tx,
+    input  wire [15:0] din,         
+    input  wire  wr_en,       
+    output wire [15:0] dout,        
+    input  wire rd_en,       
+    output wire tx_full,
+    output wire rx_empty
+);
+    wire s_tick_tx;
+    wire s_tick_rx;
+    wire [15:0] tx_fifo_dout;
+    wire tx_fifo_empty;
+    wire tx_fifo_rd_en;
+    wire [7:0]  rx_byte_out;
+    wire rx_done_tick;
+    wire rx_fifo_full;
+    wire rx_fifo_wr_en;
+    reg tx_start;
+    reg  [7:0]  tx_byte_din;
+    wire tx_done_tick;
+    wire [7:0]  rx_byte_in;
+    reg tx_state; // 0: Send Low Byte, 1: Send High Byte
+    reg rx_state; // 0: Wait Low Byte, 1: Wait High Byte
+    reg  [7:0]  rx_low_byte;
+
+    // --- 1. Instantiate Baud Rate Generators ---
+    // TX Baud Generator (Oversample = 1)
+    BAUDRATE #(
+        .CLK_FREQ(CLK_FREQ),
+        .BAUD_RATE(BAUD_RATE),
+        .OVERSAMPLE(1)
+    ) baud_gen_tx (
+        .clk(clk),
+        .rst_n(rst_n),
+        .baud_tick(s_tick_tx)
+    );
+
+    // RX Baud Generator (Oversample = 16)
+    BAUDRATE #(
+        .CLK_FREQ(CLK_FREQ),
+        .BAUD_RATE(BAUD_RATE),
+        .OVERSAMPLE(16)
+    ) baud_gen_rx (
+        .clk(clk),
+        .rst_n(rst_n),
+        .baud_tick(s_tick_rx)
+    );
+
+    // --- 2. Instantiate Transmit (TX) and Receive (RX) Modules ---
+    // Note: Wrapping your 8-bit TX/RX blocks
+    TX uart_tx_inst (
+        .clk(clk),
+        .rst_n(rst_n),
+        .s_tick(s_tick_tx),
+        .tx_start(tx_start),
+        .din(tx_byte_din),
+        .tx_done_tick(tx_done_tick),
+        .tx(tx)
+    );
+
+    RX uart_rx_inst (
+        .clk(clk),
+        .rst_n(rst_n),
+        .s_tick(s_tick_rx),
+        .rx(rx),
+        .rx_done_tick(rx_done_tick),
+        .dout(rx_byte_out)
+    );
+
+    // --- 3. Instantiate FIFOs for 16-bit Data Buffering ---
+    // TX FIFO: stores 16-bit words from user application
+    FIFO #(
+        .DATA_WIDTH(16),
+        .ADDR_WIDTH(4)
+    ) tx_fifo (
+        .clk(clk),
+        .rst_n(rst_n),
+        .wr_en(wr_en),
+        .rd_en(tx_fifo_rd_en),
+        .data_in(din),
+        .data_out(tx_fifo_dout),
+        .full(tx_full),
+        .empty(tx_fifo_empty)
+    );
+
+    // RX FIFO: stores reconstructed 16-bit words for user application
+    FIFO #(
+        .DATA_WIDTH(16),
+        .ADDR_WIDTH(4)
+    ) rx_fifo (
+        .clk(clk),
+        .rst_n(rst_n),
+        .wr_en(rx_fifo_wr_en),
+        .rd_en(rd_en),
+        .data_in({rx_byte_out, rx_low_byte}), // Combine assembled bytes
+        .data_out(dout),
+        .full(rx_fifo_full),
+        .empty(rx_empty)
+    );
+
+    // --- 4. Transmitter Control Logic (16-bit to Dual 8-bit Serialization) ---
+    assign tx_fifo_rd_en = !tx_fifo_empty && (tx_state == 1'b1) && tx_done_tick;
+
+    always @(posedge clk or negedge rst_n) 
+    begin
+        if (!rst_n) 
+        begin
+            tx_state    <= 1'b0;
+            tx_start    <= 1'b0;
+            tx_byte_din <= 8'b0;
+        end 
+        
+        else 
+        begin
+            tx_start <= 1'b0;
+            case (tx_state)
+                1'b0: begin // Send Low Byte first
+                    if (!tx_fifo_empty) begin
+                        tx_byte_din <= tx_fifo_dout[7:0];
+                        tx_start    <= 1'b1;
+                        tx_state    <= 1'b1;
+                    end
+                end
+                1'b1: begin // Send High Byte next
+                    if (tx_done_tick) begin
+                        tx_byte_din <= tx_fifo_dout[15:8];
+                        tx_start    <= 1'b1;
+                        tx_state    <= 1'b0;
+                    end
+                end
+            endcase
+        end
+    end
+
+    // --- 5. Receiver Control Logic (Dual 8-bit to 16-bit Deserialization) ---
+    assign rx_fifo_wr_en = (rx_done_tick && (rx_state == 1'b1));
+
+    always @(posedge clk or negedge rst_n) 
+    begin
+        if (!rst_n) 
+        begin
+            rx_state    <= 1'b0;
+            rx_low_byte <= 8'b0;
+        end 
+        
+        else if (rx_done_tick) 
+        begin
+            case (rx_state)
+                1'b0: begin
+                    rx_low_byte <= rx_byte_out; // Capture first byte
+                    rx_state    <= 1'b1;        // Move to high byte state
+                end
+                1'b1: begin
+                    rx_state    <= 1'b0;        // Complete 16-bit word assembly
+                end
+            endcase
+        end
+    end
+
+endmodule
