@@ -1,13 +1,14 @@
 `timescale 1ns / 1ps
 module RX(
-    input  wire clk,      
-    input  wire rst_n,      
-    input  wire s_tick,     
-    input  wire rx,         
-    output reg    rx_done_tick, 
-    output reg [7:0] dout        
-    );
+    input  wire clk,          // System clock
+    input  wire rst_n,        // Asynchronous active-low reset
+    input  wire s_tick,       // Oversampling baud tick
+    input  wire rx,           // Serial receive data line
+    output reg  rx_done_tick, // High for 1 clock cycle when a byte is fully received
+    output reg  [7:0] dout    // Parallel data output bus
+);
     
+    // UART receiver FSM
     localparam [1:0]
         STATE_IDLE  = 2'b00,
         STATE_START = 2'b01,
@@ -15,25 +16,27 @@ module RX(
         STATE_STOP  = 2'b11;
 
     reg [1:0] state_reg, state_next;
-    reg [3:0] s_reg, s_next;       
-    reg [2:0] n_reg, n_next;       
-    reg [7:0] b_reg, b_next;
+    reg [3:0] s_reg, s_next;        // Oversampling tick counter (0-15)
+    reg [2:0] n_reg, n_next;        // Data bit index counter (0-7)
+    reg [7:0] b_reg, b_next;        // Shift register for incoming data bits
     reg rx_sync_1, rx_sync_2;
     
-    // 1. Two-stage synchronizer for meta-stability protection on raw rx line
+    // Two-stage synchronizer for metastability protection
     always @(posedge clk or negedge rst_n) 
     begin
-        if (!rst_n) begin
+        if (!rst_n) 
+        begin
             rx_sync_1 <= 1'b1;
             rx_sync_2 <= 1'b1;
         end 
-        else begin
+        else 
+        begin
             rx_sync_1 <= rx;
             rx_sync_2 <= rx_sync_1;
         end
     end
     
-    // 2. State and register synchronization
+    // State and register synchronization (Sequential logic)
     always @(posedge clk or negedge rst_n) 
     begin
         if (!rst_n) 
@@ -44,7 +47,6 @@ module RX(
             b_reg     <= 8'b0;
             dout      <= 8'b0;
         end 
-        
         else 
         begin
             state_reg <= state_next;
@@ -56,7 +58,7 @@ module RX(
         end
     end
     
-    // 3. Next-state logic and oversampling data path
+    // Next-state logic and oversampling data path (Combinational logic)
     always @* 
     begin
         state_next   = state_reg;
@@ -88,13 +90,12 @@ module RX(
                             state_next = STATE_DATA;
                             s_next     = 4'b0;
                             n_next     = 3'b0;
-                        end
-                        
+                        end 
                         else
                             state_next = STATE_IDLE; // False start glitch
-                    end
-                    
-                    else begin
+                    end 
+                    else 
+                    begin
                         s_next = s_reg + 1'b1;
                     end
                 end
@@ -112,11 +113,9 @@ module RX(
                         
                         if (n_reg == 3'd7)
                             state_next = STATE_STOP;
-                            
                         else
                             n_next = n_reg + 1'b1;
-                    end
-                    
+                    end 
                     else 
                     begin
                         s_next = s_reg + 1'b1;
@@ -128,13 +127,12 @@ module RX(
             begin
                 if (s_tick) 
                 begin
-                    // Wait for stop bit duration
+                    // Wait for stop bit duration (16 ticks)
                     if (s_reg == 4'd15) 
                     begin
                         state_next   = STATE_IDLE;
                         rx_done_tick = 1'b1;
-                    end
-                    
+                    end 
                     else 
                     begin
                         s_next = s_reg + 1'b1;
